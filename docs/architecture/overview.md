@@ -6,7 +6,7 @@
   - [コアコンポーネント](#コアコンポーネント)
     - [リスナー](#リスナー)
     - [フィルターチェーン](#フィルターチェーン)
-    - [HTTP接続マネージャ](#http接続マネージャ)
+    - [HTTP connection manager](#http-connection-manager)
     - [HTTPフィルター](#httpフィルター)
     - [クラスター](#クラスター)
     - [ロードバランサー](#ロードバランサー)
@@ -61,13 +61,82 @@ graph TD
 
 ### フィルターチェーン
 
+```mermaid
+sequenceDiagram
+    participant Downstream
+    participant Listener
+    participant ListenerFilters
+    participant FilterChainMatch
+    participant NetworkFilters
+    participant Upstream
+
+    Downstream->>Listener: 1. 新しい接続要求 (SYN)
+    Listener->>Listener: 2. 接続の受け付け (Accept)
+    Listener->>ListenerFilters: 3. リスナーフィルターの実行
+    activate ListenerFilters
+    ListenerFilters->>ListenerFilters: 3a. TLSハンドシェイク, PROXYプロトコル処理など
+    ListenerFilters-->>Listener: 3b. 処理完了/メタデータ付与
+    deactivate ListenerFilters
+    Listener->>FilterChainMatch: 4. フィルターチェーンのマッチング
+    FilterChainMatch->>FilterChainMatch: 4a. 接続メタデータ(SNI, IP範囲など)に基づいて最適なFilterChainを選択
+    FilterChainMatch-->>Listener: 4b. 選択されたFilterChainを取得
+    Listener->>NetworkFilters: 5. ネットワークフィルターの実行 (Read/Write)
+    activate NetworkFilters
+    NetworkFilters->>NetworkFilters: 5a. フィルターの連鎖処理 (e.g., Rate Limit, HTTP Connection Manager)
+    alt L4 (TCP Proxy) の場合
+        NetworkFilters->>Upstream: 5b. TCP ProxyがUpstreamへの接続を確立
+        Upstream-->>NetworkFilters: 5c. Upstreamからの応答
+        NetworkFilters-->>Downstream: 5d. Downstreamへのデータ転送
+    else L7 (HTTP Connection Manager) の場合
+        NetworkFilters->>NetworkFilters: 5b'. L7処理 (ルーティング, ヘッダー操作など)
+        NetworkFilters->>Upstream: 5c'. Upstreamへのリクエスト
+        Upstream-->>NetworkFilters: 5d'. Upstreamからのレスポンス
+        NetworkFilters-->>Downstream: 5e'. Downstreamへのレスポンス
+    end
+    deactivate NetworkFilters
+```
+
 各リスナーは一連のフィルターを持ち、これらのフィルターがリクエストを処理します。フィルターには以下の種類があります：
 
 - **リスナーフィルター**: 新しい接続が確立されたときに実行されます
 - **ネットワークフィルター**: L4（TCP/UDP）レベルで動作します
 - **HTTPフィルター**: L7（HTTP）レベルで動作します
 
-### HTTP接続マネージャ
+### HTTP connection manager
+
+```mermaid
+sequenceDiagram
+    participant Downstream
+    participant Listener
+    participant NetworkFilterChain
+    participant HttpConnectionManager
+    participant HttpFilter1
+    participant RouterFilter
+    participant Upstream
+
+    Downstream->>Listener: 1. TCP接続確立
+    Listener->>NetworkFilterChain: 2. L4フィルターチェーン開始
+    Note over NetworkFilterChain: (例: TLSフィルター、接続制限フィルター)
+    NetworkFilterChain->>HttpConnectionManager: 3. HTTP Connection Manager (HCM) に制御移行
+    activate HttpConnectionManager
+    HttpConnectionManager->>HttpConnectionManager: 4. L4ストリームをHTTPリクエストにデコード
+    HttpConnectionManager->>HttpFilter1: 5. L7 HTTPフィルターチェーン開始
+    activate HttpFilter1
+    HttpFilter1->>HttpFilter1: 5a. HTTPフィルター処理 (例: 認証/レート制限)
+    HttpFilter1->>RouterFilter: 6. ルーターフィルターに制御移行 (通常はチェーンの最後)
+    activate RouterFilter
+    RouterFilter->>RouterFilter: 7. ルーティング処理 (Virtual Host/Route Match)
+    RouterFilter->>Upstream: 8. アップストリームへリクエスト送信
+    Upstream-->>RouterFilter: 9. アップストリームからレスポンス
+    RouterFilter-->>HttpFilter1: 10. HTTPフィルターチェーン逆順処理
+    HttpFilter1-->>HttpConnectionManager: 11. 処理完了
+    deactivate RouterFilter
+    deactivate HttpFilter1
+    HttpConnectionManager->>HttpConnectionManager: 12. HTTPレスポンスをL4ストリームにエンコード
+    HttpConnectionManager-->>NetworkFilterChain: 13. L4フィルターチェーンに戻る
+    deactivate HttpConnectionManager
+    NetworkFilterChain-->>Downstream: 14. ダウンストリームへレスポンス送信
+```
 
 HTTP接続マネージャーは特殊なネットワークフィルターで、HTTP/1.1、HTTP/2、HTTP/3プロトコルを処理し、HTTPフィルターチェーンを管理します。
 
@@ -75,7 +144,7 @@ HTTP接続マネージャーは特殊なネットワークフィルターで、H
 
 HTTPフィルターはHTTPリクエストとレスポンスを処理します。一般的なフィルターには以下があります：
 
-- ルーター: バックエンドサービスへのリクエストのルーティング
+- router: バックエンドサービスへのリクエストのルーティング
 - RBAC: ロールベースのアクセス制御
 - Lua: Luaスクリプトの実行
 - gRPC-JSON: gRPCとJSONの間の変換
@@ -123,12 +192,53 @@ graph LR
 
 ## 動的設定
 
+```mermaid
+sequenceDiagram
+    participant Envoy
+    participant ControlPlane
+    
+    Envoy->>ControlPlane: 1. 初期接続 (gRPCストリーム確立)
+    
+    ControlPlane-->>Envoy: 2. 接続確認 (ACK)
+    
+    Envoy->>ControlPlane: 3. CDS (Cluster Discovery Service) 要求
+    activate ControlPlane
+    ControlPlane->>Envoy: 4. Cluster リソース応答 (Cluster A, B など)
+    deactivate ControlPlane
+    
+    Envoy->>ControlPlane: 5. LDS (Listener Discovery Service) 要求
+    activate ControlPlane
+    ControlPlane->>Envoy: 6. Listener リソース応答 (Listener 80, 443 など)
+    deactivate ControlPlane
+    
+    Envoy->>ControlPlane: 7. RDS (Route Discovery Service) 要求
+    activate ControlPlane
+    ControlPlane->>Envoy: 8. Route Configuration リソース応答
+    deactivate ControlPlane
+    
+    Envoy->>ControlPlane: 9. EDS (Endpoint Discovery Service) 要求 (Cluster A, B のエンドポイント情報)
+    activate ControlPlane
+    ControlPlane->>Envoy: 10. Endpoint リソース応答 (IP:Port リスト)
+    deactivate ControlPlane
+    
+    Note over Envoy,ControlPlane: --- 設定の変更が発生した場合 ---
+    
+    ControlPlane->>Envoy: 11. Endpoint の変更通知 (EDS Push)
+    activate ControlPlane
+    ControlPlane->>Envoy: 12. 新しい Endpoint リソース応答 (IP:Port リスト更新)
+    deactivate ControlPlane
+    
+    Envoy->>ControlPlane: 13. ACK/NACK (変更の適用確認)
+    
+    Note over Envoy: Envoyは実行中の接続に影響を与えずに設定を動的に更新する
+```
+
 Envoyは動的設定をサポートしており、実行中に設定を更新できます。これは以下のAPIを通じて行われます：
 
-- **リスナーディスカバリーサービス (LDS)**: リスナーの動的設定
-- **ルートディスカバリーサービス (RDS)**: HTTPルートの動的設定
-- **クラスターディスカバリーサービス (CDS)**: クラスターの動的設定
-- **エンドポイントディスカバリーサービス (EDS)**: エンドポイントの動的設定
+- **リスナーディスカバリーサービス (LDS)**: ダウンストリームからの接続を待ち受けるリスナーの動的設定（ポート、フィルターチェーンなど）。
+- **ルートディスカバリーサービス (RDS)**: HTTPルートの動的設定（ホスト名、パスベースのルーティングルール）
+- **クラスターディスカバリーサービス (CDS)**: アップストリームクラスターの動的設定（負荷分散ポリシーなど）
+- **エンドポイントディスカバリーサービス (EDS)**: CDSで定義されたクラスターのエンドポイント（実際のサーバーIP/Portリスト）の動的設定
 - **シークレットディスカバリーサービス (SDS)**: TLS証明書の動的設定
 
 ## 可観測性
