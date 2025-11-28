@@ -9,12 +9,22 @@ $ tree
 .
 ├── docs
 │   ├── architecture
+│   │   ├── draining.md
 │   │   ├── hot_restart.md
 │   │   ├── http-routing.md
+│   │   ├── initialization.md
 │   │   ├── overview.md
+│   │   ├── runtime-configuration.md
 │   │   ├── sds.md
+│   │   ├── service-discovery.md
 │   │   ├── threading_model.md
-│   │   └── tracing.md
+│   │   ├── tracing.md
+│   │   ├── traffic-shifting-and-traffic-splitting.md
+│   │   └── xds
+│   │       ├── lds.md
+│   │       ├── vhds.md
+│   │       ├── xds-configuration-api.md
+│   │       └── xds-rest-and-grpc-protocol.md
 │   ├── development
 │   │   ├── building.md
 │   │   └── extending.md
@@ -23,10 +33,5 @@ $ tree
 │   └── usage
 │       ├── configuration.md
 │       └── getting_started.md
-├── examples
-│   └── kind
-│       ├── cleanup.sh
-│       ├── README.md
-│       └── setup.sh
 └── README.md
 ```
